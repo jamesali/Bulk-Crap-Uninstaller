@@ -152,15 +152,19 @@ namespace BulkCrapUninstaller.Forms
                 .AppendIf(Program.EnableDebug, " ", Localisable.StrDebug);
             Text = MainTitleBarText;
 
+            Console.WriteLine(MainTitleBarText);
+
             _styleController = new WindowStyleController(this);
 
             // Initialize the status bar
             toolStripLabelStatus_TextChanged(this, EventArgs.Empty);
 
             // Debug stuff
-            debugToolStripMenuItem.Enabled = Program.EnableDebug;
-            debugToolStripMenuItem.Visible = Program.EnableDebug;
-            _setMan.Selected.Settings.AdvancedSimulate = Program.EnableDebug;
+            var isDebug = Program.EnableDebug;
+            debugToolStripMenuItem.Enabled = isDebug;
+            debugToolStripMenuItem.Visible = isDebug;
+            if (isDebug)
+                _setMan.Selected.Settings.AdvancedSimulate = true;
 
             // Tracking
             UsageManager.DataSender = new DatabaseStatSender(Settings.Default.MiscUserId);
@@ -200,10 +204,19 @@ namespace BulkCrapUninstaller.Forms
         {
             base.OnDpiChanged(e);
 
-            var scaleChange = e.DeviceDpiNew / (double)e.DeviceDpiOld;
+            try
+            {
+                var scaleChange = e.DeviceDpiNew / (double)e.DeviceDpiOld;
 
-            toolStripLabelSize.Width = (int)Math.Round(toolStripLabelSize.Width * scaleChange);
-            toolStripLabelTotal.Width = (int)Math.Round(toolStripLabelTotal.Width * scaleChange);
+                if (toolStripLabelSize != null)
+                    toolStripLabelSize.Width = (int)Math.Round(toolStripLabelSize.Width * scaleChange);
+                if (toolStripLabelTotal != null)
+                    toolStripLabelTotal.Width = (int)Math.Round(toolStripLabelTotal.Width * scaleChange);
+            }
+            catch (SystemException exception)
+            {
+                Console.WriteLine(exception);
+            }
         }
 
         protected override void OnFormClosed(FormClosedEventArgs e)
@@ -1007,13 +1020,14 @@ namespace BulkCrapUninstaller.Forms
 
         private void RenameEntries(object sender, EventArgs eventArgs)
         {
-            if (_listView.SelectedUninstallerCount != 1)
+            var selectedUninstallers = _listView.SelectedUninstallers.ToList();
+            if (selectedUninstallers.Count != 1)
             {
                 MessageBoxes.CanSelectOnlyOneItemInfo();
                 return;
             }
 
-            var selected = _listView.SelectedUninstallers.First();
+            var selected = selectedUninstallers[0];
 
             if (!_setMan.Selected.Settings.AdvancedDisableProtection && selected.IsProtected)
             {
@@ -1201,7 +1215,19 @@ namespace BulkCrapUninstaller.Forms
                 uninstallerObjectListView.CheckObject(e.RowObject);
             }
 
-            OpenProperties(sender, e);
+            switch (Settings.Default.UninstallerListDoubleClickAction)
+            {
+                case UninstallerListDoubleClickAction.DoNothing:
+                    break;
+                case UninstallerListDoubleClickAction.OpenProperties:
+                    OpenProperties(sender, e);
+                    break;
+                case UninstallerListDoubleClickAction.Uninstall:
+                    RunLoudUninstall(sender, e);
+                    break;
+                default:
+                    throw new ArgumentOutOfRangeException(nameof(UninstallerListDoubleClickAction), Settings.Default.UninstallerListDoubleClickAction, "Unhandled value");
+            }
 
             //uninstallerObjectListView.CancelCellEdit();
         }
@@ -1213,7 +1239,7 @@ namespace BulkCrapUninstaller.Forms
 
             if (uninstallerObjectListView.CheckBoxes && !uninstallerObjectListView.IsChecked(e.Model))
             {
-                uninstallerObjectListView.UncheckAll();
+                //uninstallerObjectListView.UncheckAll();
                 uninstallerObjectListView.CheckObject(e.Model);
             }
         }
@@ -1500,7 +1526,7 @@ namespace BulkCrapUninstaller.Forms
 
         private void OpenTargetWindow(object sender, EventArgs e)
         {
-            var results = TargetWindow.ShowDialog(this);
+            var results = TargetWindow.ShowDialog(this, SetVisible);
 
             if (results == null) return;
 
@@ -1833,6 +1859,11 @@ namespace BulkCrapUninstaller.Forms
             {
                 LockApplication(false);
             }
+        }
+
+        private void autosizeAllColumnsToolStripMenuItem_Click(object sender, EventArgs e)
+        {
+            uninstallerObjectListView.AutoResizeColumns();
         }
     }
 }

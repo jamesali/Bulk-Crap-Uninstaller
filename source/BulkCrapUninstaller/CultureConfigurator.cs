@@ -120,6 +120,9 @@ namespace BulkCrapUninstaller
                 "it-IT",
                 "it-CH",
 
+                // ja - Japanese
+                "ja-JP",
+
                 // nl - Dutch
                 "nl-NL",
                 "nl-BE",
@@ -137,12 +140,23 @@ namespace BulkCrapUninstaller
                 // Slovenian
                 "sl-SI",
 
+                // Swedish
+                "sv-AX",
+                "sv-FI",
+                "sv-SE",
+
                 // Turkish
                 "tr-CY",
                 "tr-TR",
 
+                // Vietnamese
+                "vi-VN",
+
                 // Simplified Chinese
-                "zh-Hans"
+                "zh-Hans",
+
+                // Traditional Chinese
+                "zh-Hant"
             }.Attempt(CultureInfo.GetCultureInfo).ToList();
 
             supportedCultures.Add(EnUsCulture);

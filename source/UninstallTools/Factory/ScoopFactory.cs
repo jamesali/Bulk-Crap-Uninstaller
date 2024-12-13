@@ -19,7 +19,6 @@ namespace UninstallTools.Factory
 {
     public sealed partial class ScoopFactory : IIndependantUninstallerFactory
     {
-        private static bool? _scoopIsAvailable;
         private static string _scoopUserPath;
         private static string _scoopGlobalPath;
         private static string _scriptPath;
@@ -33,20 +32,7 @@ namespace UninstallTools.Factory
             _jsonContext = new JsonContext(jsonOptions);
         }
 
-        private static bool ScoopIsAvailable
-        {
-            get
-            {
-                if (!_scoopIsAvailable.HasValue)
-                {
-                    _scoopIsAvailable = false;
-                    GetScoopInfo();
-                }
-                return _scoopIsAvailable.Value;
-            }
-        }
-
-        private static void GetScoopInfo()
+        private static bool GetScoopInfo()
         {
             try
             {
@@ -66,13 +52,15 @@ namespace UninstallTools.Factory
                     if (!File.Exists(_powershellPath))
                         throw new InvalidOperationException(@"Detected Scoop program installer, but failed to detect PowerShell");
 
-                    _scoopIsAvailable = true;
+                    return true;
                 }
             }
             catch (SystemException ex)
             {
                 Trace.WriteLine("Failed to get Scoop info: " + ex);
             }
+
+            return false;
         }
 
         private sealed class ExportInfo
@@ -101,7 +89,7 @@ namespace UninstallTools.Factory
         public IList<ApplicationUninstallerEntry> GetUninstallerEntries(ListGenerationProgress.ListGenerationCallback progressCallback)
         {
             var results = new List<ApplicationUninstallerEntry>();
-            if (!ScoopIsAvailable) return results;
+            if (!GetScoopInfo()) return results;
 
             // Make uninstaller for scoop itself
             var scoopEntry = new ApplicationUninstallerEntry
@@ -109,7 +97,9 @@ namespace UninstallTools.Factory
                 RawDisplayName = "Scoop",
                 Comment = "Automated program installer",
                 AboutUrl = "https://github.com/ScoopInstaller/Scoop",
-                InstallLocation = _scoopUserPath
+                InstallLocation = _scoopUserPath,
+                IsOrphaned = false,
+                RatingId = "Scoop"
             };
 
             // Make sure the global directory gets removed as well
@@ -143,7 +133,7 @@ namespace UninstallTools.Factory
                 }
             }
             // Fallback to plain text export format
-            catch (JsonException)
+            catch (JsonException e)
             {
                 var appEntries = result.Split(StringTools.NewLineChars.ToArray(), StringSplitOptions.RemoveEmptyEntries).Select(x => x.Trim());
                 foreach (var str in appEntries)
@@ -172,6 +162,11 @@ namespace UninstallTools.Factory
                     {
                         name = str;
                     }
+
+                    // Make sure that this isn't just a corrupted json export
+                    if (string.Equals(name, "\"apps\":", StringComparison.Ordinal) ||
+                        string.Equals(name, "\"buckets\":", StringComparison.Ordinal))
+                        throw new InvalidDataException("Scoop export is in unkown or invalid format! Try updating Scoop and try again.\n\nContents:\n" + result, e);
 
                     var entry = CreateUninstallerEntry(name, version, isGlobal, exeSearcher);
 
@@ -239,26 +234,41 @@ namespace UninstallTools.Factory
                     var shortcuts = manifest.Architecture?[install.Architecture]?.Shortcuts ?? manifest.Shortcuts;
                     if (shortcuts != null)
                     {
-                        executables.AddRange(
-                            shortcuts.Select(x => Path.Combine(currentDir, x[0])));
+                        var files = shortcuts.Select(x => Path.Combine(currentDir, x[0]))
+                                             .Where(File.Exists)
+                                             .Select(Path.GetFullPath)
+                                             .Distinct(StringComparer.OrdinalIgnoreCase)
+                                             .ToList();
 
-                        var icons = shortcuts
-                            .Where(x => x.Length >= 4 && x[3].EndsWith(".ico"))
-                            .Select(x => Path.Combine(currentDir, x[3]));
-                        if (icons.Any())
+                        executables.AddRange(files.Where(x => x.EndsWith(".exe", StringComparison.OrdinalIgnoreCase)).Concat(files.Where(x => x.EndsWith(".cmd", StringComparison.OrdinalIgnoreCase))));
+
+                        var potentialIcons = files.Where(x => x.EndsWith(".ico", StringComparison.OrdinalIgnoreCase)).Concat(files.Where(x => x.EndsWith(".exe", StringComparison.OrdinalIgnoreCase))).ToList();
+                        foreach (var potentialIcon in potentialIcons)
                         {
                             try
                             {
-                                entry.IconBitmap = new Icon(icons.First());
+                                var icon = potentialIcon.EndsWith(".ico", StringComparison.OrdinalIgnoreCase) ? new Icon(potentialIcon) : Icon.ExtractAssociatedIcon(potentialIcon);
+                                if (icon == null || icon.Size == Size.Empty) continue;
+                                entry.IconBitmap = icon;
+                                break;
                             }
-                            catch { }
+                            catch (Exception ex)
+                            {
+                                Console.WriteLine($@"Failed to get icon for [{name}] from [{potentialIcon}] - {ex}");
+                            }
                         }
                     }
 
                     var bin = manifest.Architecture?[install.Architecture]?.Bin ?? manifest.Bin;
                     if (bin != null)
                     {
-                        executables.AddRange(bin.Select(x => Path.Combine(installDir, "current", x)));
+                        var filteredBins = bin.Select(x => Path.Combine(installDir, "current", x))
+                                              .Where(File.Exists)
+                                              .Select(Path.GetFullPath)
+                                              .Except(executables, StringComparer.OrdinalIgnoreCase)
+                                              .Where(x => x.EndsWith(".exe", StringComparison.OrdinalIgnoreCase) || x.EndsWith(".cmd", StringComparison.OrdinalIgnoreCase))
+                                              .ToList();
+                        executables.AddRange(filteredBins);
                     }
 
                     var env = manifest.Architecture?[install.Architecture]?.EnvAddPath ?? manifest.EnvAddPath;
@@ -276,11 +286,8 @@ namespace UninstallTools.Factory
 
                 if (executables.Any())
                 {
-                    entry.SortedExecutables = AppExecutablesSearcher.SortListExecutables(
-                            executables.Distinct().Select(x => new FileInfo(x)),
-                            entry.DisplayNameTrimmed)
-                        .Select(x => x.FullName)
-                        .ToArray();
+                    // No need to sort, safe to assume the manifest has the most important executables in first positions
+                    entry.SortedExecutables = executables.ToArray();
                 }
                 else
                 {
@@ -321,7 +328,7 @@ namespace UninstallTools.Factory
 
         private static ProcessStartCommand MakeScoopCommand(string scoopArgs)
         {
-            return new ProcessStartCommand(_powershellPath, $"-ex unrestricted \"{_scriptPath}\" {scoopArgs}");
+            return new ProcessStartCommand(_powershellPath, $"-NoProfile -ex unrestricted \"{_scriptPath}\" {scoopArgs}");
         }
 
 
